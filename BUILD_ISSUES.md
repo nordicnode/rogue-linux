@@ -1,6 +1,20 @@
 # Build Issues Found During README Testing
 
-This document lists issues encountered when following the README.md build instructions on macOS (darwin 25.0.0, Apple Silicon).
+This document lists issues encountered when following the README.md build instructions on macOS (darwin 25.0.0, Apple Silicon), plus the Linux port notes.
+
+## Current Status
+
+Both issues below are fixed in the tree, and the game builds and runs on
+modern Linux. Verified on CachyOS (Arch Linux, x86_64) with GCC 16.2.1,
+ncurses 6.6 and GNU make 4.4.1 from a clean tree:
+
+- `./configure && make` completes without errors.
+- `./rogue` starts, plays, saves to `~/.rogue.save` (mode 0400), restores, and
+  lists scores with `./rogue -s`.
+- `make install DESTDIR=...` produces a correct system layout, and `makepkg`
+  builds an Arch package from this tree (see `PKGBUILD`).
+
+See the Linux port notes at the end of this document for what changed.
 
 ## Date
 Testing performed: Following README.md Quick Start instructions
@@ -122,4 +136,89 @@ tstp(int ignored)
 - The build system (Autotools) is properly configured
 - The issue is specifically with code compatibility, not with the build system or documentation
 - This appears to be a known issue with porting old curses-based code to modern ncurses
+
+---
+
+## Linux (CachyOS / Arch Linux)
+
+Verified November 2026 on CachyOS (Arch Linux, x86_64), GCC 16.2.1, ncurses
+6.6, GNU make 4.4.1.
+
+### Fixes required
+
+1. **ncurses private `WINDOW` fields** (`main.c`, `tstp()`): the resume-from-
+   suspend path wrote `curscr->_cury` / `curscr->_curx`, which are not part of
+   the public API. It now calls `wmove(curscr, oy, ox)`, which updates the same
+   state through the public interface.
+
+2. **GCC 15+ defaults to C23** (`Makefile.in`, `Makefile.std`): this is K&R-era
+   C, where `void f()` means "unspecified arguments" and daemon/fuse callbacks
+   are invoked through unprototyped function pointers with arguments. Under C23
+   `()` means "no arguments", so the build fails. Both makefiles now pass
+   `-std=gnu89`, the dialect the code was written for. Passing it explicitly
+   keeps the build independent of the compiler's default, which matters as
+   distributions keep moving to newer GCC releases.
+
+3. **Setgid scoreboard permissions** (`Makefile.in`): the install rule
+   chmod'ed the scoreboard to `0464`. A setgid binary runs with effective
+   group `games`, and `0464` grants that group read-only access, so
+   `fopen("r+")` in `open_score()` fails and no score is ever recorded.
+   Changed to `0664`, matching what the RPM spec's `%attr` already used.
+
+4. **Stale objects after reconfiguring** (`Makefile.in`): the object files had
+   no dependency on `config.h`, so running `./configure` with different
+   options and then `make` reused objects built against the old configuration.
+   `makepkg` hit this: it reconfigured for `/var/games/roguelike/rogue.scr`,
+   `make` reported "'rogue' is up to date", and the package shipped a binary
+   with the previous build's scoreboard path compiled in. Objects now depend
+   on `config.h` and `Makefile`. (The rule sits below the link rule so the
+   executable remains make's default goal.)
+
+### Install layout
+
+Arch's `filesystem` package already provides `/var/games` and the `games`
+group (`/usr/lib/sysusers.d/arch.conf`, gid 50), so the classic shared-
+scoreboard layout works unchanged:
+
+```bash
+./configure --prefix=/usr \
+    --enable-setgid=games \
+    --enable-scorefile=/var/games/roguelike/rogue.scr \
+    --enable-lockfile=/var/games/roguelike/rogue.lck
+make
+make install DESTDIR="$pkgdir"
+```
+
+`Makefile.in` was also fixed so that `install`:
+
+- creates the scoreboard's parent directory instead of assuming it exists
+  (`install-sh -d`), and skips the scoreboard entirely when it is disabled;
+- skips lockfile handling when no lockfile is configured. With an empty
+  path, `$(DESTDIR)$(LOCKFILE)` collapsed to `$(DESTDIR)` and the rule
+  installed its temporary `test` file into the package root;
+- applies `DESTDIR` when testing for the `man6` directory, so the manual page
+  lands in `<destdir>/usr/share/man/man6` rather than the host's
+  `/usr/share/man`;
+- no longer drops the scoreboard at `<destdir>rogue.scr`. The old
+  `$(DESTDIR)$(SCOREFILE)` concatenation produced `<destdir>` + `rogue.scr`
+  with no path separator when the scorefile was configured as a relative path.
+
+`uninstall` used `$(DESTDIR)$(docdir)$(PROGRAM)` (missing separator) and
+removed only the `.doc` file. It now removes every installed document and
+`rmdir`s the right directory.
+
+### Packaging
+
+`PKGBUILD` packages this tree for Arch/CachyOS (`makepkg -si`). Because no
+tagged upstream tarball contains the local changes, it builds in place from
+`$startdir`, so run it from the repository root.
+
+### Remaining notes
+
+- `md_gethomedir()` reads the home directory from `getpwuid()`, not `$HOME`,
+  so save files always go to the passwd home directory. That is original
+  behaviour rather than a Linux bug, but it is surprising when testing with a
+  temporary `$HOME`.
+- `make install` run as a normal user cannot `chgrp games`; a setgid install
+  needs root or fakeroot (which `makepkg` provides).
 

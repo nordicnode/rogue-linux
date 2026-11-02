@@ -26,7 +26,12 @@ O=o
 CC    = @CC@
 
 #CFLAGS=-O2
-CFLAGS= @CFLAGS@ 
+#
+# This is K&R-era C: old-style "void func()" declarations mean "unspecified
+# arguments", and calls such as (*d_func)(d_arg) rely on that.  With GCC 15+
+# (default -std=gnu23) an empty parameter list means "no arguments" and the
+# build fails, so build with the dialect the code was written for.
+CFLAGS= @CFLAGS@ -std=gnu89
 
 #LIBS=-lcurses
 LIBS =	@LIBS@
@@ -91,6 +96,9 @@ bindir=@bindir@
 mandir=@mandir@
 docdir=@docdir@
 man6dir = $(mandir)/man6
+# Directory holding the scoreboard, derived from the configured scorefile path
+# (empty or ./ when the scoreboard is disabled or uses a relative path).
+scoredir = $(dir $(SCOREFILE))
 
 ###############################################################################
 # Site configuration occurs above this comment
@@ -125,12 +133,19 @@ MISC     = Makefile.std LICENSE.TXT rogue54.sln rogue54.vcproj rogue.spec \
 
 .c.obj:
 	$(CC) $(CFLAGS) $(CPPFLAGS) /c $*.c
-    
+
 .c.o:
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $*.c
-    
+
 $(PROGRAM): $(HDRS) $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+
+# Every object embeds settings taken from config.h (scoreboard and lock file
+# paths, setgid group, feature switches), so reconfiguring must rebuild them.
+# Without this a second ./configure with different options silently reuses
+# objects built against the old config.  Keep this below the link rule so the
+# executable stays the default make goal.
+$(OBJS): config.h Makefile
     
 clean:
 	$(RM) $(OBJS1)
@@ -192,29 +207,42 @@ dist: clean $(PROGRAM)
 
 install: $(PROGRAM)
 	-$(TOUCH) test
-	-if test ! -f $(DESTDIR)$(SCOREFILE) ; then $(INSTALL) -m 0664 test $(DESTDIR)$(SCOREFILE) ; fi
+	-if test -n "$(SCOREFILE)" ; then \
+	    $(INSTALL) -d $(DESTDIR)$(scoredir) ; \
+	    if test ! -f $(DESTDIR)$(SCOREFILE) ; then $(INSTALL) -m 0664 test $(DESTDIR)$(SCOREFILE) ; fi ; \
+	 fi
 	-$(INSTALL) -m 0755 $(PROGRAM) $(DESTDIR)$(bindir)/$(PROGRAM)
 	-if test "x$(GROUPOWNER)" != "x" ; then \
-	    $(CHGRP) $(GROUPOWNER) $(DESTDIR)$(SCOREFILE) ; \
 	    $(CHGRP) $(GROUPOWNER) $(DESTDIR)$(bindir)/$(PROGRAM) ; \
 	    $(CHMOD) 02755 $(DESTDIR)$(bindir)/$(PROGRAM) ; \
-	    $(CHMOD) 0464 $(DESTDIR)$(SCOREFILE) ; \
+	    if test -n "$(SCOREFILE)" ; then \
+		$(CHGRP) $(GROUPOWNER) $(DESTDIR)$(SCOREFILE) ; \
+		$(CHMOD) 0664 $(DESTDIR)$(SCOREFILE) ; \
+	    fi ; \
          fi
-	-if test -d $(man6dir) ; then $(INSTALL) -m 0644 rogue.6 $(DESTDIR)$(man6dir)/$(PROGRAM).6 ; fi
-	-if test ! -d $(man6dir) ; then $(INSTALL) -m 0644 rogue.6 $(DESTDIR)$(mandir)/$(PROGRAM).6 ; fi
+	-$(INSTALL) -m 0644 rogue.6 $(DESTDIR)$(man6dir)/$(PROGRAM).6
 	-$(INSTALL) -m 0644 rogue.doc $(DESTDIR)$(docdir)/$(PROGRAM).doc
 	-$(INSTALL) -m 0644 rogue.html $(DESTDIR)$(docdir)/$(PROGRAM).html
 	-$(INSTALL) -m 0644 rogue.cat $(DESTDIR)$(docdir)/$(PROGRAM).cat
 	-$(INSTALL) -m 0644 LICENSE.TXT $(DESTDIR)$(docdir)/LICENSE.TXT
 	-$(INSTALL) -m 0644 rogue.me $(DESTDIR)$(docdir)/$(PROGRAM).me
-	-if test ! -f $(DESTDIR)$(LOCKFILE)  ; then $(INSTALL) -m 0666 test $(DESTDIR)$(LOCKFILE)  ; $(RM) $(DESTDIR)$(LOCKFILE) ; fi
+	-if test -n "$(LOCKFILE)" ; then \
+	    if test ! -f $(DESTDIR)$(LOCKFILE) ; then \
+		$(INSTALL) -m 0666 test $(DESTDIR)$(LOCKFILE) ; \
+		$(RM) $(DESTDIR)$(LOCKFILE) ; \
+	    fi ; \
+	 fi
 	-$(RM) test
 
 uninstall:	
 	-$(RM) $(DESTDIR)$(bindir)/$(PROGRAM)
 	-$(RM) $(DESTDIR)$(man6dir)/$(PROGRAM).6
-	-$(RM) $(DESTDIR)$(docdir)$(PROGRAM)/$(PROGRAM).doc
-	-$(RM) $(DESTDIR)$(LOCKFILE)
-	-$(RMDIR) $(DESTDIR)$(docdir)$(PROGRAM)
+	-$(RM) $(DESTDIR)$(docdir)/$(PROGRAM).doc
+	-$(RM) $(DESTDIR)$(docdir)/$(PROGRAM).html
+	-$(RM) $(DESTDIR)$(docdir)/$(PROGRAM).cat
+	-$(RM) $(DESTDIR)$(docdir)/$(PROGRAM).me
+	-$(RM) $(DESTDIR)$(docdir)/LICENSE.TXT
+	-if test -n "$(LOCKFILE)" ; then $(RM) $(DESTDIR)$(LOCKFILE) ; fi
+	-$(RMDIR) $(DESTDIR)$(docdir)
     
 reinstall: uninstall install

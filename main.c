@@ -238,8 +238,13 @@ tstp(int ignored)
     getyx(curscr, y, x);
     mvcur(y, x, oy, ox);
     fflush(stdout);
-    curscr->_cury = oy;
-    curscr->_curx = ox;
+    /*
+     * Let curses know where the cursor actually is.  This used to poke
+     * curscr->_cury/_curx directly, but those are private to ncurses and
+     * are not visible with modern headers.  wmove() is the public way to
+     * update the same state.
+     */
+    wmove(curscr, oy, ox);
 }
 
 /*
